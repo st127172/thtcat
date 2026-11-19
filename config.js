@@ -1,7 +1,7 @@
-// Fill these two values from Supabase: Project Settings > API (Data API).
-// The anon (publishable) key is meant to be public; never put the service_role key here.
+// Supabase project for THTCat. The publishable (anon) key is meant to be public;
+// never put a secret or service_role key here.
 window.THTCAT_CONFIG = {
-  supabaseUrl: '',      // e.g. https://abcdefgh.supabase.co
-  supabaseAnonKey: '',  // starts with eyJ... or sb_publishable_...
-  google: false         // set true after enabling Google sign-in in Supabase
+  supabaseUrl: 'https://exxwabeofxwpjdptecgk.supabase.co',
+  supabaseAnonKey: 'sb_publishable_Tk-F1c0ck5mYB5oz9yLgPg_YmGW3R2b',
+  google: false
 };
