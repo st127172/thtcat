@@ -261,7 +261,6 @@ footer{border-top:1px solid var(--line);padding:34px 0 50px;margin-top:40px;colo
   .pts-chip{display:none}
 }
 
-
 /* ---- v2 additions ---- */
 .mode-pill{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:99px;white-space:nowrap}
 .mode-cloud{background:var(--green-s);color:var(--green)} .mode-local{background:var(--amber-s);color:var(--amber)}
@@ -372,6 +371,17 @@ button.user-chip{cursor:pointer;min-height:40px;color:var(--ink)}
 .or-line{display:flex;align-items:center;gap:10px;color:var(--mute);font-size:12px;margin:10px 0}
 .or-line:before,.or-line:after{content:"";flex:1;height:1px;background:var(--line)}
 .g-btn{display:flex;align-items:center;justify-content:center;gap:10px}
+.auth-tabs{margin:0 0 16px}
+.link-btn{background:none;border:0;padding:0 2px;color:var(--teal-d);font-weight:600;text-decoration:underline;cursor:pointer;min-height:24px}
+.acc-links{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
+.acc-links a{display:flex;align-items:center;min-height:44px;padding:0 14px;border:1px solid var(--line);border-radius:12px;text-decoration:none;font-weight:600;font-size:14px;color:var(--ink);background:#fff}
+.acc-links a:hover{background:var(--line2)}
+.acc-links a:focus-visible{outline:3px solid var(--orange);outline-offset:2px}
+.admin-tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin-bottom:14px}
+.btn.danger{color:var(--rose)}
+.btn.danger:hover{background:var(--rose-s)}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.tbl .btn-sm{min-height:36px}
 
 </style>
 </head>
@@ -649,6 +659,22 @@ const supaRun = q => q.then(r=>{ if (r.error) throw supaErr(r.error); return r.d
 Store.set = (p, d) => Store.mode==='supa' ? dbCall(()=>supaRun(SUPA.client.from('docs').upsert({path:p, parent:parentOf(p), data:JSON.parse(JSON.stringify(d))})), p) : Store.mode==='cloud' ? dbCall(()=>Store.db.doc(p).set(d), p) : (LOCAL.data[p]=JSON.parse(JSON.stringify(d)), lsSave(), localEmit(p), Promise.resolve());
 Store.update = (p, d) => Store.mode==='supa' ? dbCall(()=>supaRun(SUPA.client.rpc('doc_merge', {p, d:JSON.parse(JSON.stringify(d))})), p) : Store.mode==='cloud' ? dbCall(()=>Store.db.doc(p).update(d), p) : (LOCAL.data[p]={...(LOCAL.data[p]||{}), ...JSON.parse(JSON.stringify(d))}, lsSave(), localEmit(p), Promise.resolve());
 Store.del = p => Store.mode==='supa' ? dbCall(()=>supaRun(SUPA.client.from('docs').delete().eq('path', p)), p) : Store.mode==='cloud' ? dbCall(()=>Store.db.doc(p).delete(), p) : (delete LOCAL.data[p], lsSave(), localEmit(p), Promise.resolve());
+Store.setQuiet = (p, d) => { try {
+  if (Store.mode==='supa') return SUPA.client.from('docs').upsert({path:p, parent:parentOf(p), data:JSON.parse(JSON.stringify(d))}).then(()=>{}, ()=>{});
+  if (Store.mode==='cloud') return Store.db.doc(p).set(d).catch(()=>{});
+  LOCAL.data[p]=JSON.parse(JSON.stringify(d)); lsSave(); localEmit(p); return Promise.resolve(); } catch(e){ return Promise.resolve(); } };
+function logAct(act, target, detail){
+  if (!Store.me) return;
+  const nm = (ACC&&ACC.name) || NAMES[Store.me] || '';
+  Store.setQuiet('activity/'+Date.now().toString(36)+rid(), { t:Date.now(), uid:Store.me, name:nm, act, target:target||'', detail:String(detail||'').slice(0,200) });
+}
+function touchMember(extra){
+  if (!Store.me) return;
+  const em = (ACC&&ACC.email) || SUPA.user?.email || '';
+  const nm = (ACC&&ACC.name) || SUPA.user?.user_metadata?.full_name || NAMES[Store.me] || '';
+  if (!em && !nm) return;
+  Store.setQuiet('members/'+Store.me, { name:nm, email:em, joined:(MEMBERS[Store.me]?.joined) || (ACC&&ACC.verifiedAt) || Date.now(), lastSeen:Date.now(), ...(extra||{}) });
+}
 Store.lock = async p => {
   if (Store.mode!=='cloud') return true; // supa: double booking is also blocked by the dates check
   try { const r = await Store.db.doc(p).acquire({holder: Store.me, ttlMs: 6000}); return !!r.acquired; } catch(e){ return true; }
@@ -661,6 +687,8 @@ let WAL = null;          // my wallet
 let CATS = [];           // my cats
 let NAMES = {};          // uid -> display name
 let ACC = null;          // my verified account profile {email,name,verified,...}
+let BAN = null;          // my ban record, if any
+let MEMBERS = {}, ACTS = [], BANS = {}, REVS = {}; // admin data
 const ready = { s:false, b:false, w:false, c:false };
 let loadTimer = null, loadSlow = false;
 let F = { area:'', start:'', end:'', addons:[], superhost:false, sort:'rec', q:'' };
@@ -714,6 +742,7 @@ async function boot(){
       if (!prof.data){ const nm = SUPA.user.user_metadata?.full_name || SUPA.user.user_metadata?.name || (SUPA.user.email||'').split('@')[0];
         await sb.from('docs').upsert([{path:'data/users/'+Store.me+'/profile', parent:'data/users/'+Store.me, data:{email:SUPA.user.email, name:nm, verified:true, verifiedAt:Date.now(), via:'supabase', mode:UI.mode}}, {path:'profiles/'+Store.me, parent:'profiles', data:{name:nm}}]); }
     }
+    try { const ja = sessionStorage.getItem('thtcat-justauth'); if (ja && Store.me){ sessionStorage.removeItem('thtcat-justauth'); setTimeout(()=>{ logAct(ja==='login'?'auth.login':'auth.signup', SUPA.user?.email, ''); touchMember(); }, 1500); } } catch(e){}
     sb.auth.onAuthStateChange((ev, s2)=>{ const id = s2?.user?.id || null; if (id !== Store.me) location.reload(); });
     subscribeAll(); updateChrome();
     try { const r = JSON.parse(sessionStorage.getItem('thtcat-resume')||'null'); if (r && Store.me){ sessionStorage.removeItem('thtcat-resume'); if (r.D) D = r.D; if (r.hash) setTimeout(()=>go(r.hash), 300); } } catch(e){}
@@ -749,8 +778,20 @@ function subscribeAll(){
     WAL = d; ready.w=true; checkReady(); schedule(); reconcile(); updateChrome();
   }, onDbError);
   Store.watchDoc('config/pricing', d=>{ PRICING = (d && Array.isArray(d.rules)) ? d : {rules:[]}; schedule(); }, onDbError);
-  Store.watchDoc(profilePath(), d=>{ ACC = d || null; updateChrome(); schedule(); }, onDbError);
+  Store.watchDoc(profilePath(), d=>{ const first = ACC===null; ACC = d || null; updateChrome(); schedule(); if (first && isVerified()) touchMember(); }, onDbError);
+  Store.watchDoc('bans/'+Store.me, d=>{ BAN = d || null; updateChrome(); schedule(); }, ()=>{});
+  if (Store.isAdmin) subscribeAdmin();
   Store.watchDoc(catsPath(), d=>{ CATS = (d && Array.isArray(d.list)) ? d.list : []; ready.c=true; checkReady(); schedule(); }, onDbError);
+}
+let adminSubbed = false, revSubs = {};
+function subscribeAdmin(){
+  if (adminSubbed) return; adminSubbed = true;
+  Store.watch('members', arr=>{ MEMBERS={}; arr.forEach(m=>MEMBERS[m.id]=m); schedule(); }, ()=>{});
+  Store.watch('bans', arr=>{ BANS={}; arr.forEach(b=>BANS[b.id]=b); schedule(); }, ()=>{});
+  Store.watch('activity', arr=>{ ACTS = arr.sort((a,b)=>(b.t||0)-(a.t||0)).slice(0,500); schedule(); }, ()=>{});
+}
+function watchAllReviews(){
+  Object.keys(SIT).forEach(sid=>{ if (revSubs[sid]) return; revSubs[sid] = Store.watch('sitters/'+sid+'/reviews', arr=>{ REVS[sid]=arr; schedule(); }, ()=>{}); });
 }
 function checkReady(){ if (ready.s && ready.b && loadTimer){ clearTimeout(loadTimer); loadTimer=null; loadSlow=false; } }
 function notifyChanges(arr){
@@ -877,8 +918,9 @@ function renderNav(h){
 function updateChrome(){
   $('#ptsChip').textContent = '★ '+(WAL? (WAL.points||0).toLocaleString() : '–')+' pts';
   const nm = isVerified() ? ((ACC&&ACC.name) || (SUPA.user?.user_metadata?.full_name) || ((ACC&&ACC.email)||SUPA.user?.email||'You').split('@')[0]) : (Store.mode==='cloud' ? (NAMES[Store.me] || 'You') : 'Guest');
-  $('#meName').textContent = isVerified() ? nm : 'Sign up'; $('#meAv').textContent = isVerified() ? nm.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() : '+';
-  $('#userChip').classList.toggle('needs', !isVerified()); $('#userChip').setAttribute('aria-label', isVerified() ? 'Account: '+nm+', verified' : 'Sign up with Gmail');
+  $('#meName').textContent = isVerified() ? nm : 'Log in'; $('#meAv').textContent = isVerified() ? nm.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() : '+';
+  $('#userChip').classList.toggle('needs', !isVerified()); $('#userChip').setAttribute('aria-label', isVerified() ? 'My account: '+nm : 'Log in or sign up');
+  if (BAN){ $('#demoBar').innerHTML = `<span class="mode-pill" style="background:var(--rose);color:#fff">SUSPENDED</span> &nbsp;Your account is suspended${BAN.reason?': '+esc(BAN.reason):''}. You can view the site but cannot book, apply or message. Contact support@thtcat.app.`; return; }
   $('#demoBar').innerHTML = Store.mode==='supa'
     ? `<span class="mode-pill mode-cloud">● LIVE</span> &nbsp;Real accounts and data · Payments are simulated (test mode)${Store.isAdmin?' · <b>You are the platform admin</b>':''}`
     : Store.mode==='cloud'
@@ -1361,6 +1403,7 @@ async function doPay(btn){
       addons:[...D.addons], food:Number(D.food)||0, insure:D.insure, couponOk:D.couponOk, usePoints:D.usePoints, notes:D.notes, pay:D.pay,
       price:q, status:'pending', escrow:'held', created:Date.now(), lastBy:Store.me };
     try { await Store.set('bookings/'+id, b); } catch(e){ closeModal(); return; }
+    logAct('booking.create', id, (SIT[b.sitterId]?.name||'')+' · '+baht(b.price?.total));
     if (q.pts || D.couponOk){
       const w = {...WAL, log:[...(WAL.log||[])]};
       if (q.pts){ w.points -= q.pts; w.log.push({t:Date.now(), txt:'Used at checkout · '+id, p:-q.pts}); }
@@ -1594,7 +1637,7 @@ async function sitterAction(kind, id){
   if (kind==='accept'){
     await Store.update('bookings/'+id, {status:'confirmed', tAccept:Date.now(), lastBy:Store.me});
     await Store.set('bookings/'+id+'/messages/'+rid('m'), {role:'sitter', by:Store.me, t:Date.now(), text:`Hi! I've accepted your booking 😊 See you on ${b.mode==='hours'?fmtD(b.date):fmtD(b.start)}.`}).catch(()=>{});
-    toast('Booking accepted');
+    toast('Booking accepted'); logAct('booking.accept', id, SIT[b.sitterId]?.name);
   }
   if (kind==='decline'){
     modal(`<h2 class="h-m">Decline this booking?</h2><p class="small sub">The customer gets a full refund from escrow.</p><select class="inp" id="declineReason"><option>Not available on these dates</option><option>Can't care for this cat's medical needs</option><option>Too many cats for my space</option><option>Other</option></select><div class="row between" style="margin-top:14px"><button class="btn btn-g" data-a="closeModal">Back</button><button class="btn btn-o" data-sact="declineYes" data-id="${id}">Decline & refund</button></div>`);
@@ -1603,7 +1646,7 @@ async function sitterAction(kind, id){
   if (kind==='declineYes'){
     const reason = $('#declineReason')?.value || '';
     closeModal();
-    await Store.update('bookings/'+id, {status:'declined', escrow:'refunded', tCancel:Date.now(), reason, lastBy:Store.me});
+    await Store.update('bookings/'+id, {status:'declined', escrow:'refunded', tCancel:Date.now(), reason, lastBy:Store.me}); logAct('booking.decline', id, reason);
     toast('Declined · customer refunded');
   }
   if (kind==='checkin'){
@@ -1652,7 +1695,7 @@ function viewBecome(){
         <div class="req" style="padding:12px 18px"><div style="flex:1"><b class="small">Home & accident insurance</b><div class="tiny muted">Yearly · partner insurer</div></div><span class="small muted">Quoted at approval</span></div>
       </div>
     </div>
-    <div>${ms ? `<div class="card pad" style="text-align:center"><div style="font-size:40px">📋</div><h2 class="h-m">You already have a sitter profile</h2><p class="small muted">Status: ${esc(ms.status)}</p><a class="btn btn-p" href="#sitter-dashboard">Open sitter dashboard</a></div>` : (isVerified() ? sitterForm(null, false) : `<div class="card pad auth-gate"><div class="auth-ic" aria-hidden="true">${I.mail}</div><h2 class="h-m" style="margin-top:10px">Sign up to apply</h2><p class="small sub">Confirm your Gmail address with a 6-digit code. Your application, payouts and booking alerts are linked to it.</p><button class="btn btn-p btn-block auth-cta" type="button" data-a="account">Sign up with Gmail</button></div>`)}</div>
+    <div>${ms ? `<div class="card pad" style="text-align:center"><div style="font-size:40px">📋</div><h2 class="h-m">You already have a sitter profile</h2><p class="small muted">Status: ${esc(ms.status)}</p><a class="btn btn-p" href="#sitter-dashboard">Open sitter dashboard</a></div>` : (isVerified() ? sitterForm(null, false) : `<div class="card pad auth-gate"><div class="auth-ic" aria-hidden="true">${I.mail}</div><h2 class="h-m" style="margin-top:10px">Log in to apply</h2><p class="small sub">Confirm your email with a 6-digit code. Your application, payouts and booking alerts are linked to it.</p><button class="btn btn-p btn-block auth-cta" type="button" data-a="account">Log in or sign up</button></div>`)}</div>
    </div></div>`;
 }
 const earnBox = gross => `<div class="card" style="padding:10px;box-shadow:none"><div class="tiny muted">Bookings</div><b>${baht(gross)}</b></div><div class="card" style="padding:10px;box-shadow:none"><div class="tiny muted">GP 20%</div><b>${baht(gross*.2)}</b></div><div class="card" style="padding:10px;box-shadow:none;background:var(--green-s);border-color:#bfe3cc"><div class="tiny muted">You earn</div><b style="color:var(--green)">${baht(gross*.8)}</b></div>`;
@@ -1692,23 +1735,58 @@ function viewAdmin(){
   const held = all.filter(b=>b.escrow==='held').reduce((a,b)=>a+(b.price?.total||0),0);
   const gp = all.filter(b=>b.status==='completed').reduce((a,b)=>a+(b.price?.gp||0),0);
   const refunds = all.filter(b=>b.escrow==='refunded').reduce((a,b)=>a+(b.price?.total||0),0);
-  const apps = Object.values(SIT).filter(s=>!s.demo).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  const apps = Object.values(SIT).sort((a,b)=>(a.demo?1:0)-(b.demo?1:0) || (b.createdAt||0)-(a.createdAt||0));
   const demos = Object.values(SIT).filter(s=>s.demo).sort((a,b)=>(a.seed||0)-(b.seed||0));
-  const tabs = [['overview','Overview'],['apps','Sitter applications',apps.filter(s=>s.status==='pending').length],['demo','Demo sitters',BK.filter(b=>b.status==='pending'&&SIT[b.sitterId]?.demo).length],['all','All bookings'],['pricing','Seasonal pricing']];
+  const disputes = all.filter(b=>b.disputed && b.escrow==='held');
+  const tabs = [['overview','Overview'],['users','Users',Object.keys(BANS).length?null:null],['apps','Sitters',apps.filter(s=>s.status==='pending').length],['demo','Demo sitters',BK.filter(b=>b.status==='pending'&&SIT[b.sitterId]?.demo).length],['all','Bookings'],['moderation','Moderation',disputes.length],['activity','Activity log'],['pricing','Seasonal pricing']];
+  if (UI.adminTab==='moderation') watchAllReviews();
   let body='';
   if (UI.adminTab==='overview'){
     body = `<div class="kpis"><div class="card pad kpi"><span class="muted small">Bookings (GMV)</span><b>${baht(gmv)}</b><span class="tiny muted">${valid.length} active/completed</span></div><div class="card pad kpi"><span class="muted small">Held in escrow</span><b>${baht(held)}</b></div><div class="card pad kpi"><span class="muted small">Platform GP earned (20%)</span><b style="color:var(--green)">${baht(gp)}</b></div><div class="card pad kpi"><span class="muted small">Refunded</span><b>${baht(refunds)}</b></div></div>
-    <div class="kpis" style="margin-top:12px"><div class="card pad kpi"><span class="muted small">Live sitters</span><b>${liveSitters().length}</b></div><div class="card pad kpi"><span class="muted small">Pending applications</span><b>${apps.filter(s=>s.status==='pending').length}</b></div><div class="card pad kpi"><span class="muted small">Customers</span><b>${new Set(all.map(b=>b.ownerUid)).size}</b></div><div class="card pad kpi"><span class="muted small">Disputes open</span><b>${all.filter(b=>b.disputed&&b.escrow==='held').length}</b></div></div>`;
+    <div class="kpis" style="margin-top:12px"><div class="card pad kpi"><span class="muted small">Live sitters</span><b>${liveSitters().length}</b></div><div class="card pad kpi"><span class="muted small">Pending applications</span><b>${apps.filter(s=>s.status==='pending').length}</b></div><div class="card pad kpi"><span class="muted small">Customers</span><b>${new Set(all.map(b=>b.ownerUid)).size}</b></div><div class="card pad kpi"><span class="muted small">Disputes open</span><b>${disputes.length}</b></div></div>
+    <div class="kpis" style="margin-top:12px"><div class="card pad kpi"><span class="muted small">Registered users</span><b>${Object.keys(MEMBERS).length}</b></div><div class="card pad kpi"><span class="muted small">Banned users</span><b>${Object.keys(BANS).length}</b></div><div class="card pad kpi"><span class="muted small">Actions today</span><b>${ACTS.filter(a=>ymd(new Date(a.t))===TODAY).length}</b></div><div class="card pad kpi"><span class="muted small">Suspended sitters</span><b>${Object.values(SIT).filter(s=>['suspended','rejected'].includes(s.status)).length}</b></div></div>
+    <div class="row between" style="margin:22px 0 8px"><h2 class="h-m" style="font-size:20px">Latest activity</h2><button class="btn btn-g btn-sm" data-tab="adminTab:activity">View all</button></div>
+    ${actTable(ACTS.slice(0,8))}`;
   }
   if (UI.adminTab==='apps'){
-    body = apps.length ? `<div class="card">${apps.map(s=>`<div class="dash-item"><div><div class="row wrapf" style="gap:8px"><b>${esc(s.name)}</b><span class="badge ${s.status==='live'?'b-green':s.status==='pending'?'b-amber':'b-rose'}">${esc(s.status)}</span>${s.paused?'<span class="badge b-gray">paused</span>':''}</div><div class="small sub">${esc(s.area)} · age ${esc(s.age)} · ${esc(s.home)}</div><div class="tiny muted">Documents: ${(s.docs||[]).map(d=>esc(d)).join(', ')||'none'} · ${(s.photos||[]).length} photo(s) · applied ${s.createdAt?fmtDT(s.createdAt):''}</div></div>
-      <div class="row wrapf" style="gap:6px;justify-content:flex-end"><a class="btn btn-g btn-sm" href="#sitter-${s.id}">Preview</a>${s.status!=='live'?`<button class="btn btn-p btn-sm" data-admin="approve" data-id="${s.id}">Approve</button>`:''}${s.status!=='rejected'?`<button class="btn btn-g btn-sm" data-admin="reject" data-id="${s.id}">${s.status==='live'?'Suspend':'Reject'}</button>`:''}</div></div>`).join('')}</div>` : `<div class="card empty">No applications yet. Share the page so sitters can apply from “Become a sitter”.</div>`;
+    body = apps.length ? `<div class="card">${apps.map(s=>`<div class="dash-item"><div><div class="row wrapf" style="gap:8px"><b>${esc(s.name)}</b><span class="badge ${s.status==='live'?'b-green':s.status==='pending'?'b-amber':'b-rose'}">${esc(s.status)}</span>${s.demo?'<span class="badge b-gray">demo</span>':''}${s.paused?'<span class="badge b-gray">paused</span>':''}</div><div class="small sub">${esc(s.area)} · age ${esc(s.age)} · ${esc(s.home)}</div><div class="tiny muted">Documents: ${(s.docs||[]).map(d=>esc(d)).join(', ')||'none'} · ${(s.photos||[]).length} photo(s) · applied ${s.createdAt?fmtDT(s.createdAt):''}</div></div>
+      <div class="row wrapf" style="gap:6px;justify-content:flex-end"><a class="btn btn-g btn-sm" href="#sitter-${s.id}">Preview</a>${s.status==='pending'?`<button class="btn btn-p btn-sm" data-admin="approve" data-id="${s.id}">Approve</button>`:''}${s.status==='live'?`<button class="btn btn-o btn-sm" data-admin="suspend" data-id="${s.id}">Suspend</button>`:''}${s.status==='pending'?`<button class="btn btn-g btn-sm" data-admin="reject" data-id="${s.id}">Reject</button>`:''}${['suspended','rejected'].includes(s.status)?`<button class="btn btn-g btn-sm" data-admin="approve" data-id="${s.id}">Reinstate</button>`:''}<button class="btn btn-ghost btn-sm danger" data-admin="delSitter" data-id="${s.id}">Delete</button></div></div>`).join('')}</div>` : `<div class="card empty">No applications yet. Share the page so sitters can apply from “Become a sitter”.</div>`;
   }
   if (UI.adminTab==='demo'){
     body = `<p class="small muted" style="margin-top:0">These sample sitters don't belong to a real person, so you act for them: accept requests, start care, post reports and chat.</p><div class="card">${demos.map(s=>{ const p=BK.filter(b=>b.sitterId===s.id&&b.status==='pending').length, a=BK.filter(b=>b.sitterId===s.id&&['confirmed','incare'].includes(b.status)).length; return `<div class="dash-item"><div class="row" style="gap:12px"><div class="av-sm" style="margin:0;width:40px;height:40px">${avatarSVG(s.name,sColor(s))}</div><div><b>${esc(s.name)}</b><div class="small muted">${esc(s.area)}</div></div></div><div class="row" style="gap:8px">${p?`<span class="badge b-or">${p} request${p>1?'s':''}</span>`:''}${a?`<span class="badge b-teal">${a} active</span>`:''}<a class="btn btn-p btn-sm" href="#manage-${s.id}">Manage</a></div></div>`; }).join('')}</div>`;
   }
   if (UI.adminTab==='all'){
-    body = `<div class="card" style="overflow-x:auto"><table class="tbl"><tr><th>ID</th><th>Sitter</th><th>Customer</th><th>Dates</th><th>Total</th><th>GP</th><th>Status</th><th>Escrow</th></tr>${all.map(b=>`<tr><td><a href="#booking-${b.id}" style="color:var(--teal-d)">${esc(b.id)}</a></td><td>${esc(shortName(SIT[b.sitterId]))}</td><td>${esc(nameOf(b.ownerUid))}</td><td>${bookingWhen(b)}</td><td>${baht(b.price?.total)}</td><td>${baht(b.price?.gp)}</td><td><span class="badge ${STATUS[b.status]?.[1]}">${STATUS[b.status]?.[0]}</span>${b.disputed?' <span class="badge b-rose">dispute</span>':''}</td><td>${esc(b.escrow)}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No bookings yet.</td></tr>'}</table></div>`;
+    body = `<div class="card" style="overflow-x:auto"><table class="tbl"><tr><th>ID</th><th>Sitter</th><th>Customer</th><th>Dates</th><th>Total</th><th>GP</th><th>Status</th><th>Escrow</th><th><span class="sr-only">Actions</span></th></tr>${all.map(b=>`<tr><td><a href="#booking-${b.id}" style="color:var(--teal-d)">${esc(b.id)}</a></td><td>${esc(shortName(SIT[b.sitterId]))}</td><td>${esc(nameOf(b.ownerUid))}</td><td>${bookingWhen(b)}</td><td>${baht(b.price?.total)}</td><td>${baht(b.price?.gp)}</td><td><span class="badge ${STATUS[b.status]?.[1]}">${STATUS[b.status]?.[0]}</span>${b.disputed?' <span class="badge b-rose">dispute</span>':''}</td><td>${esc(b.escrow)}</td><td>${b.escrow==='held'?`<div class="row" style="gap:6px"><button class="btn btn-g btn-sm" data-admin="refundBk" data-id="${b.id}">Refund</button>${b.status==='incare'?`<button class="btn btn-g btn-sm" data-admin="releaseBk" data-id="${b.id}">Release</button>`:''}</div>`:''}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">No bookings yet.</td></tr>'}</table></div>`;
+  }
+  if (UI.adminTab==='users'){
+    const uids = new Set([...Object.keys(MEMBERS), ...all.map(b=>b.ownerUid), ...Object.values(SIT).filter(x=>x.uid).map(x=>x.uid)].filter(Boolean));
+    const q = (UI.adminQ||'').toLowerCase();
+    const rows = [...uids].map(uid=>{ const m=MEMBERS[uid]||{}; const sit=Object.values(SIT).find(x=>x.uid===uid); return { uid, name:m.name||NAMES[uid]||'', email:m.email||'', joined:m.joined, seen:m.lastSeen, bk:all.filter(b=>b.ownerUid===uid).length, sit, ban:BANS[uid] }; })
+      .filter(r=>!q || (r.name+' '+r.email+' '+r.uid).toLowerCase().includes(q))
+      .filter(r=>UI.userF==='banned' ? !!r.ban : UI.userF==='sitters' ? !!r.sit : true)
+      .sort((a,b)=>(b.seen||0)-(a.seen||0));
+    body = `<div class="admin-tools"><label class="lbl" for="admQ" style="margin:0">Search users</label><input class="inp" id="admQ" data-adminq="1" data-keep="admQ" placeholder="Name, email or ID" value="${esc(UI.adminQ||'')}" style="max-width:340px">
+      <div class="mode-switch" role="group" aria-label="Filter users">${[['all','All'],['sitters','Sitters'],['banned','Banned']].map(([k,t])=>`<button type="button" data-userf="${k}" aria-pressed="${(UI.userF||'all')===k}">${t}</button>`).join('')}</div></div>
+    <div class="card" style="overflow-x:auto"><table class="tbl"><tr><th>User</th><th>Joined</th><th>Last active</th><th>Bookings</th><th>Sitter</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr>
+    ${rows.map(r=>`<tr><td><b>${esc(r.name||'Unnamed')}</b><div class="tiny muted">${esc(r.email||'no email on file')}</div><div class="tiny muted">${esc(r.uid.slice(0,12))}…</div></td><td class="small">${r.joined?fmtDT(r.joined).split(' · ')[0]:'–'}</td><td class="small">${r.seen?fmtDT(r.seen):'–'}</td><td>${r.bk}</td><td>${r.sit?`<span class="badge ${r.sit.status==='live'?'b-green':r.sit.status==='pending'?'b-amber':'b-rose'}">${esc(r.sit.status)}</span>`:'<span class="tiny muted">–</span>'}</td><td>${r.ban?`<span class="badge b-rose">Banned</span><div class="tiny muted">${esc(r.ban.reason||'')}</div>`:'<span class="badge b-green">Active</span>'}</td>
+      <td><div class="row wrapf" style="gap:6px;justify-content:flex-end"><button class="btn btn-g btn-sm" data-admin="userActs" data-uid="${esc(r.uid)}">Activity</button>${r.uid===Store.me?'':(r.ban?`<button class="btn btn-g btn-sm" data-admin="unban" data-uid="${esc(r.uid)}">Unban</button>`:`<button class="btn btn-o btn-sm" data-admin="ban" data-uid="${esc(r.uid)}">Ban</button>`)}${r.uid===Store.me?'':`<button class="btn btn-ghost btn-sm danger" data-admin="removeUser" data-uid="${esc(r.uid)}">Remove</button>`}</div></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No users match.</td></tr>'}</table></div>
+    <p class="tiny muted">Ban blocks booking, applying and messaging. Remove deletes the user's public profile and sitter profile and bans the account; bookings stay for the records.</p>`;
+  }
+  if (UI.adminTab==='moderation'){
+    const revs = Object.entries(REVS).flatMap(([sid,arr])=>arr.map(r=>({...r, sid}))).sort((a,b)=>(b.t||0)-(a.t||0));
+    body = `<h2 class="h-m" style="font-size:20px;margin-bottom:8px">Open disputes</h2>
+    ${disputes.length ? `<div class="card">${disputes.map(b=>`<div class="dash-item"><div><div class="row wrapf" style="gap:8px"><b>${esc(b.id)}</b><span class="badge b-rose">Dispute</span><span class="badge ${STATUS[b.status]?.[1]}">${STATUS[b.status]?.[0]}</span></div><div class="small sub">${esc(nameOf(b.ownerUid))} vs ${esc(shortName(SIT[b.sitterId]))} · ${bookingWhen(b)} · ${baht(b.price?.total)} held</div><div class="small">“${esc(b.disputed)}”</div></div>
+      <div class="row wrapf" style="gap:6px;justify-content:flex-end"><a class="btn btn-g btn-sm" href="#booking-${b.id}">Open chat & reports</a><button class="btn btn-o btn-sm" data-admin="refundBk" data-id="${b.id}">Refund owner</button><button class="btn btn-p btn-sm" data-admin="releaseBk" data-id="${b.id}">Release to sitter</button></div></div>`).join('')}</div>` : '<div class="card pad muted small">No open disputes.</div>'}
+    <h2 class="h-m" style="font-size:20px;margin:22px 0 8px">Reviews</h2>
+    ${revs.length ? `<div class="card">${revs.map(r=>`<div class="dash-item"><div><div class="row wrapf" style="gap:8px"><b>${esc(nameOf(r.by))}</b><span class="stars small">${'★'.repeat(r.stars||0)}${'☆'.repeat(5-(r.stars||0))}</span><span class="tiny muted">for ${esc(shortName(SIT[r.sid]))} · ${r.t?fmtDT(r.t):''}</span></div><div class="small sub">${esc(r.text)}</div></div><button class="btn btn-ghost btn-sm danger" data-admin="delReview" data-id="${esc(r.sid+'/'+r.id)}">Delete review</button></div>`).join('')}</div>` : '<div class="card pad muted small">No customer reviews yet.</div>'}`;
+  }
+  if (UI.adminTab==='activity'){
+    const F2 = UI.actF || 'all', q=(UI.adminQ||'').toLowerCase();
+    const list = ACTS.filter(a=> F2==='all' || a.act.startsWith(F2)).filter(a=>!UI.actUser || a.uid===UI.actUser).filter(a=>!q || ((a.name||'')+' '+a.act+' '+a.target+' '+a.detail).toLowerCase().includes(q));
+    body = `<div class="admin-tools"><label class="lbl" for="admQ" style="margin:0">Search activity</label><input class="inp" id="admQ" data-adminq="1" data-keep="admQ" placeholder="Name, booking ID or text" value="${esc(UI.adminQ||'')}" style="max-width:300px">
+      <div class="mode-switch" role="group" aria-label="Filter activity">${[['all','All'],['auth','Accounts'],['booking','Bookings'],['sitter','Sitters'],['dispute','Disputes'],['admin','Admin']].map(([k,t])=>`<button type="button" data-actf="${k}" aria-pressed="${F2===k}">${t}</button>`).join('')}</div>
+      ${UI.actUser?`<button class="btn btn-g btn-sm" data-admin="clearActUser">Showing one user · show all</button>`:''}</div>
+    ${actTable(list.slice(0,200))}<p class="tiny muted">Latest 500 actions are loaded. Logins, bookings, payments, reports, applications, disputes and every admin action are recorded.</p>`;
   }
   if (UI.adminTab==='pricing'){
     const rules = (PRICING.rules||[]).slice().sort((a,b)=>(a.start||'').slice(5).localeCompare((b.start||'').slice(5)));
@@ -1718,8 +1796,39 @@ function viewAdmin(){
     <div class="row wrapf" style="gap:8px;margin-top:12px"><button class="btn btn-p" data-rule="new:">+ Add season or festival</button>${rules.length?'':'<button class="btn btn-g" data-rule="defaults:">Load suggested Thai seasons & festivals</button>'}</div>
     <p class="tiny muted" style="margin-top:10px">Festival dates that follow the lunar calendar (Chinese New Year, Loy Krathong) change every year — add them as one-off dates for each year.</p>`;
   }
-  return `<div class="wrap" style="padding:28px 20px"><h1 class="h-l" style="font-size:28px">Platform admin</h1><div class="small muted">Only you (the page owner) see this.</div>
+  return `<div class="wrap" style="padding:28px 20px"><h1 class="h-l" style="font-size:28px">Platform admin</h1><div class="small muted">Back office · visible to platform admins only.</div>
     <div class="tabs" style="margin-top:16px">${tabs.map(t=>`<button data-tab="adminTab:${t[0]}" class="${UI.adminTab===t[0]?'on':''}">${t[1]}${t[2]?` <span class="badge b-or">${t[2]}</span>`:''}</button>`).join('')}</div>${body}</div>`;
+}
+
+const ACT_LABEL = { 'auth.signup':['Signed up','b-teal'], 'auth.login':['Logged in','b-gray'], 'booking.create':['Booked & paid','b-teal'], 'booking.accept':['Accepted booking','b-green'], 'booking.decline':['Declined booking','b-rose'], 'booking.cancel':['Cancelled booking','b-rose'], 'booking.complete':['Released payment','b-green'], 'report.post':['Posted report','b-gray'], 'sitter.apply':['Applied as sitter','b-amber'], 'dispute.open':['Opened dispute','b-rose'],
+  'admin.ban':['Admin: banned user','b-rose'], 'admin.unban':['Admin: unbanned user','b-gray'], 'admin.remove':['Admin: removed user','b-rose'], 'admin.approve':['Admin: approved sitter','b-green'], 'admin.reject':['Admin: rejected sitter','b-rose'], 'admin.suspend':['Admin: suspended sitter','b-rose'], 'admin.delSitter':['Admin: deleted sitter','b-rose'], 'admin.refund':['Admin: refunded booking','b-amber'], 'admin.release':['Admin: released escrow','b-amber'], 'admin.delReview':['Admin: deleted review','b-rose'] };
+function actTarget(a){ if (a.target && /^(TC|BK)/.test(a.target) && BK.find(b=>b.id===a.target)) return `<a href="#booking-${esc(a.target)}" style="color:var(--teal-d)">${esc(a.target)}</a>`; if (a.target && SIT[a.target]) return `<a href="#sitter-${esc(a.target)}" style="color:var(--teal-d)">${esc(SIT[a.target].name)}</a>`; return esc(a.target||''); }
+function actTable(list){
+  if (!list.length) return '<div class="card pad muted small">No activity recorded yet.</div>';
+  return `<div class="card" style="overflow-x:auto"><table class="tbl"><tr><th>Time</th><th>User</th><th>Action</th><th>Target</th><th>Details</th></tr>${list.map(a=>{ const L=ACT_LABEL[a.act]||[a.act,'b-gray']; const m=MEMBERS[a.uid]; return `<tr><td class="small" style="white-space:nowrap">${fmtDT(a.t)}</td><td><b class="small">${esc(a.name||m?.name||'Unknown')}</b>${BANS[a.uid]?' <span class="badge b-rose">banned</span>':''}<div class="tiny muted">${esc(m?.email||'')}</div></td><td><span class="badge ${L[1]}">${esc(L[0])}</span></td><td class="small">${actTarget(a)}</td><td class="small sub">${esc(a.detail||'')}</td></tr>`; }).join('')}</table></div>`;
+}
+function confirmAdmin(title, text, cta, data, needReason){
+  modal(`<h2 class="h-m">${esc(title)}</h2><p class="small sub">${text}</p>${needReason?`<label class="lbl" for="admReason">Reason (shown to the user)</label><input class="inp" id="admReason" maxlength="120" value="Breaking community rules">`:''}
+    <div class="row between" style="margin-top:14px"><button class="btn btn-g" type="button" data-a="closeModal">Cancel</button><button class="btn ${/Delete|Remove|Ban/.test(cta)?'btn-o':'btn-p'}" type="button" data-admin="${data.act}" data-id="${esc(data.id||'')}" data-uid="${esc(data.uid||'')}" data-confirmed="1">${esc(cta)}</button></div>`);
+}
+async function adminAction(d){
+  const A=d.admin, id=d.id, uid=d.uid, ok=!!d.confirmed, reason=$('#admReason')?.value?.trim();
+  const who = uid ? ((MEMBERS[uid]?.name)||NAMES[uid]||'this user') : '';
+  try {
+    if (A==='approve'){ await Store.update('sitters/'+id, {status:'live', approvedAt:Date.now()}); toast('Sitter is live'); logAct('admin.approve', id, SIT[id]?.name); }
+    if (A==='reject'){ await Store.update('sitters/'+id, {status:'rejected'}); toast('Application rejected'); logAct('admin.reject', id, SIT[id]?.name); }
+    if (A==='suspend'){ if (!ok) return confirmAdmin('Suspend '+(SIT[id]?.name||'sitter')+'?', 'The profile is hidden from search and cannot receive new bookings. Existing bookings continue.', 'Suspend sitter', {act:'suspend', id}); closeModal(); await Store.update('sitters/'+id, {status:'suspended', suspendedAt:Date.now()}); toast('Sitter suspended'); logAct('admin.suspend', id, SIT[id]?.name); }
+    if (A==='delSitter'){ if (!ok) return confirmAdmin('Delete '+(SIT[id]?.name||'sitter')+'?', 'This permanently removes the sitter profile. Bookings stay in the records. This cannot be undone.', 'Delete sitter', {act:'delSitter', id}); closeModal(); const nm=SIT[id]?.name; await Store.del('sitters/'+id); toast('Sitter deleted'); logAct('admin.delSitter', id, nm); }
+    if (A==='ban'){ if (!ok) return confirmAdmin('Ban '+who+'?', 'They can still view the site but cannot book, apply as a sitter or send messages.', 'Ban user', {act:'ban', uid}, true); closeModal(); await Store.set('bans/'+uid, {reason:reason||'', by:Store.me, t:Date.now()}); toast('User banned'); logAct('admin.ban', uid, who+(reason?' · '+reason:'')); }
+    if (A==='unban'){ await Store.del('bans/'+uid); toast('User unbanned'); logAct('admin.unban', uid, who); }
+    if (A==='removeUser'){ if (!ok) return confirmAdmin('Remove '+who+'?', 'This deletes their public profile and sitter profile and bans the account. Their bookings stay for the records. This cannot be undone.', 'Remove user', {act:'removeUser', uid}, true); closeModal();
+      await Store.set('bans/'+uid, {reason:reason||'Removed by admin', by:Store.me, t:Date.now()}); await Store.del('profiles/'+uid).catch(()=>{}); await Store.del('members/'+uid).catch(()=>{}); const sid='u-'+sanitize(uid); if (SIT[sid]) await Store.del('sitters/'+sid).catch(()=>{}); toast('User removed'); logAct('admin.remove', uid, who); }
+    if (A==='userActs'){ UI.actUser=uid; UI.adminTab='activity'; UI.adminQ=''; render(); return; }
+    if (A==='clearActUser'){ UI.actUser=null; render(); return; }
+    if (A==='refundBk'){ const b=BK.find(x=>x.id===id); if (!ok) return confirmAdmin('Refund '+id+'?', `${baht(b?.price?.total)} goes back to the cat owner and the booking is cancelled.`, 'Refund owner', {act:'refundBk', id}); closeModal(); await Store.update('bookings/'+id, {status:'cancelled', escrow:'refunded', tCancel:Date.now(), disputeResolved:'refund', lastBy:Store.me}); toast('Refunded'); logAct('admin.refund', id, ''); }
+    if (A==='releaseBk'){ const b=BK.find(x=>x.id===id); if (!ok) return confirmAdmin('Release '+id+' to the sitter?', `${baht(b?.price?.sitterPay)} goes to the sitter and the booking is marked completed.`, 'Release payment', {act:'releaseBk', id}); closeModal(); await Store.update('bookings/'+id, {status:'completed', escrow:'released', tOut:Date.now(), disputeResolved:'release', lastBy:Store.me}); toast('Payment released'); logAct('admin.release', id, ''); }
+    if (A==='delReview'){ const [sid, rvid]=id.split('/'); if (!ok) return confirmAdmin('Delete this review?', 'The review disappears from the sitter profile. This cannot be undone.', 'Delete review', {act:'delReview', id}); closeModal(); await Store.del('sitters/'+sid+'/reviews/'+rvid); toast('Review deleted'); logAct('admin.delReview', sid, rvid); }
+  } catch(e){}
 }
 
 /* =================== complete / review =================== */
@@ -1741,7 +1850,7 @@ async function completeBooking(id){
   if (s && Store.mode!=='supa'){ const n=(s.reviews||0)+1; await Store.update('sitters/'+b.sitterId, {reviews:n, rating:Math.round((((s.rating||0)*(s.reviews||0))+review.stars)/n*100)/100, done:(s.done||0)+1}).catch(()=>{}); }
   const w = {...WAL, log:[...(WAL.log||[])].slice(-80)}; w.points=(w.points||0)+q.earn; w.log.push({t:Date.now(), txt:'Completed stay with '+shortName(s), p:q.earn});
   await Store.set(walletPath(), w).catch(()=>{});
-  toast('Payment released · +'+q.earn+' pts');
+  toast('Payment released · +'+q.earn+' pts'); logAct('booking.complete', id, review.stars+'★ '+review.text);
 }
 
 /* =================== pricing admin =================== */
@@ -1771,7 +1880,7 @@ function ruleAction(cmd){
 /* =================== events =================== */
 document.addEventListener('click', e=>{
   if (window._suppressClick && Date.now()-window._suppressClick<250){ e.preventDefault(); e.stopPropagation(); return; }
-  const t = e.target.closest('[data-rule],[data-datepanel],[data-a],[data-go],[data-fav],[data-pick],[data-mnav],[data-mode],[data-cat],[data-editcat],[data-delcat],[data-pay],[data-food],[data-tab],[data-sact],[data-redeem],[data-admin],[data-chatas],[data-quick],[data-wi],[data-complete]');
+  const t = e.target.closest('[data-userf],[data-actf],[data-rule],[data-datepanel],[data-a],[data-go],[data-fav],[data-pick],[data-mnav],[data-mode],[data-cat],[data-editcat],[data-delcat],[data-pay],[data-food],[data-tab],[data-sact],[data-redeem],[data-admin],[data-chatas],[data-quick],[data-wi],[data-complete]');
   if (!t) return;
   const d = t.dataset;
   if (d.fav){ e.stopPropagation(); toggleFav(d.fav); return; }
@@ -1799,11 +1908,9 @@ document.addEventListener('click', e=>{
   if (d.redeem){ redeem(d.redeem, Number(d.cost||50)); return; }
   if (d.chatas){ UI.chatAs=d.chatas; render(); return; }
   if (d.complete){ completeBooking(d.complete).catch(()=>{}); return; }
-  if (d.admin){
-    if (d.admin==='approve') Store.update('sitters/'+d.id, {status:'live', approvedAt:Date.now()}).then(()=>toast('Sitter approved — profile is live')).catch(()=>{});
-    if (d.admin==='reject') Store.update('sitters/'+d.id, {status:'rejected'}).then(()=>toast('Sitter status updated')).catch(()=>{});
-    return;
-  }
+  if (d.admin){ if (Store.isAdmin) adminAction(d); return; }
+  if (d.userf){ UI.userF=d.userf; render(); return; }
+  if (d.actf){ UI.actF=d.actf; render(); return; }
   if (d.star){ return; }
   const a = d.a;
   if (a==='closeModalBg'){ if (e.target===t) closeModal(); return; }
@@ -1815,6 +1922,9 @@ document.addEventListener('click', e=>{
   if (a==='authSend'){ authSend(); return; }
   if (a==='authVerify'){ authVerify(); return; }
   if (a==='authBack'){ AUTH.step=1; paintAuth(); return; }
+  if (a==='authTabLogin'){ AUTH.tab='login'; AUTH.err=''; AUTH.nameErr=''; AUTH.noAccount=false; AUTH.email=($('#authEmail')?.value||AUTH.email).trim(); paintAuth(); $('#authEmail')?.focus(); return; }
+  if (a==='authTabSignup'){ AUTH.tab='signup'; AUTH.err=''; AUTH.noAccount=false; AUTH.email=($('#authEmail')?.value||AUTH.email).trim(); paintAuth(); $('#authName')?.focus(); return; }
+  if (a==='saveName'){ saveName(); return; }
   if (a==='authResend'){ authSend(true); return; }
   if (a==='signOut' && Store.mode==='supa'){ closeModal(); SUPA.client.auth.signOut().then(()=>location.reload()); return; }
   if (a==='google'){ googleSignIn(); return; }
@@ -1825,7 +1935,7 @@ document.addEventListener('click', e=>{
   if (a==='applySearchDates'){ F.start=PICK.search.start; F.end=PICK.search.end; UI.datePanel=null; if (D){ D.start=''; D.end=''; } const h=(location.hash||'#home').slice(1); if (h==='home'||h==='') go('sitters'); else render(true); return; }
   if (a==='clearF'){ F={ area:'', start:'', end:'', addons:[], superhost:false, sort:'rec', q:'' }; render(); return; }
   if (a==='scrollBook'){ $('#bookAside')?.scrollIntoView({behavior:'smooth'}); return; }
-  if (a==='toCheckout'){ if (!bookValid()) return; if (!isVerified()){ openAuth(()=>$('[data-a=toCheckout]')?.click(), 'Sign up to book a sitter'); return; } D.step=1; if (!D.cats.length){ const ok=CATS.find(c=>!catIssues(c).length); if (ok) D.cats=[ok.id]; } go('checkout'); return; }
+  if (a==='toCheckout'){ if (!bookValid()) return; if (BAN){ toast('Your account is suspended, so you cannot book.'); return; } if (!isVerified()){ openAuth(()=>$('[data-a=toCheckout]')?.click(), 'Log in or create an account to book this sitter.'); return; } D.step=1; if (!D.cats.length){ const ok=CATS.find(c=>!catIssues(c).length); if (ok) D.cats=[ok.id]; } go('checkout'); return; }
   if (a==='askSitter'){ askSitterModal(); return; }
   if (a==='addCat'){ catEditor(null); return; }
   if (a==='step1'){ D.step=1; render(); return; }
@@ -1844,9 +1954,9 @@ document.addEventListener('click', e=>{
   const cb = () => BK.find(x=>'#booking-'+x.id===decodeURIComponent(location.hash));
   if (a==='complete'){ const b=cb(); if (b) completeModal(b); return; }
   if (a==='cancelBk'){ const b=cb(); if (!b) return; modal(`<h2 class="h-m">Cancel this booking?</h2><p class="sub small">${baht((b.price||quote(b)).total)} will be refunded from escrow.</p><div class="row between"><button class="btn btn-g" data-a="closeModal">Keep booking</button><button class="btn btn-o" data-a="cancelYes">Cancel & refund</button></div>`); return; }
-  if (a==='cancelYes'){ const b=cb(); closeModal(); if (!b || b.ownerUid!==Store.me || !['pending','confirmed'].includes(b.status)) return; Store.update('bookings/'+b.id, {status:'cancelled', escrow:'refunded', tCancel:Date.now(), lastBy:Store.me}).then(()=>toast('Booking cancelled · refund issued')).catch(()=>{}); return; }
+  if (a==='cancelYes'){ const b=cb(); closeModal(); if (!b || b.ownerUid!==Store.me || !['pending','confirmed'].includes(b.status)) return; Store.update('bookings/'+b.id, {status:'cancelled', escrow:'refunded', tCancel:Date.now(), lastBy:Store.me}).then(()=>{ toast('Booking cancelled · refund issued'); logAct('booking.cancel', b.id, ''); }).catch(()=>{}); return; }
   if (a==='dispute'){ modal(`<h2 class="h-m">Report a problem</h2><p class="small sub">Payment stays locked in escrow while THTCat reviews CCTV and the time-stamped reports.</p><select class="inp" id="dispType"><option>Care not as described</option><option>Cat health concern</option><option>Missing reports</option><option>Other</option></select><textarea class="inp" id="dispText" rows="3" maxlength="300" style="margin-top:8px" placeholder="What happened?"></textarea><div class="row between" style="margin-top:12px"><button class="btn btn-g" data-a="closeModal">Cancel</button><button class="btn btn-o" data-a="disputeSend">Submit report</button></div>`); return; }
-  if (a==='disputeSend'){ const b=cb(); const txt=$('#dispType').value+(($('#dispText').value||'').trim()?': '+$('#dispText').value.trim():''); closeModal(); if (b) Store.update('bookings/'+b.id, {disputed:txt, lastBy:Store.me}).then(()=>toast('Report submitted · escrow locked until resolved')).catch(()=>{}); return; }
+  if (a==='disputeSend'){ const b=cb(); const txt=$('#dispType').value+(($('#dispText').value||'').trim()?': '+$('#dispText').value.trim():''); closeModal(); if (b) Store.update('bookings/'+b.id, {disputed:txt, lastBy:Store.me}).then(()=>{ toast('Report submitted · escrow locked until resolved'); logAct('dispute.open', b.id, txt); }).catch(()=>{}); return; }
 });
 document.addEventListener('click', e=>{ const st=e.target.closest('[data-star]'); if (!st) return; pickStars=+st.dataset.star; $$('[data-star]').forEach(x=>x.classList.toggle('on', +x.dataset.star<=pickStars)); });
 function toggleFav(id){
@@ -1865,6 +1975,7 @@ document.addEventListener('submit', async e=>{
   const fd = Object.fromEntries(new FormData(f));
   if (k==='search'){ F.area=fd.area||''; go('sitters'); return; }
   if (k==='chat'){
+    if (BAN){ toast('Your account is suspended, so you cannot send messages.'); return; }
     const text=(fd.m||'').trim(); if (!text) return;
     const inp=f.querySelector('input'); inp.value='';
     await Store.set('bookings/'+f.dataset.id+'/messages/'+rid('m'), {role:UI.chatAs, by:Store.me, text, t:Date.now()}).catch(()=>{ inp.value=text; });
@@ -1903,13 +2014,14 @@ document.addEventListener('submit', async e=>{
     try {
       const img = await compressImage(file, 720, stamp);
       await Store.set('bookings/'+id+'/reports/'+rid('r'), {title:fd.title, text:(fd.text||'').trim(), img, t, by:Store.me, hash:hashStr(img+t).slice(0,12)});
-      toast('Report posted'); f.reset();
+      toast('Report posted'); f.reset(); logAct('report.post', f.dataset.id||'', '');
     } catch(err){ toast(err.message||'Upload failed'); }
     btn.textContent='Post report'; btn.disabled=false;
     return;
   }
   if (k==='sitter'){
-    if (!isVerified()){ openAuth(null, 'Sign up before applying as a sitter'); return; }
+    if (BAN){ toast('Your account is suspended.'); return; }
+    if (!isVerified()){ openAuth(null, 'Log in or create an account to apply as a sitter.'); return; }
     const editing = !!f.dataset.edit;
     if (!editing && Number(fd.age) < 20){ toast('Sitters must be 20 years or older'); return; }
     const docInputs = [...f.querySelectorAll('input[type=file][name^="doc_"]')];
@@ -1925,7 +2037,7 @@ document.addEventListener('submit', async e=>{
       if (editing){ data.paused = !!fd.paused; await Store.update('sitters/'+targetId, data); toast('Profile saved'); }
       else {
         await Store.set('sitters/'+sid, {...data, uid:Store.me, demo:false, status:'pending', paused:false, blocked:[], rating:0, reviews:0, done:0, years:0, resp:'within 1 hr', superhost:false, docs:docInputs.map(i=>i.files[0].name.slice(0,60)), createdAt:Date.now(), color:SITTER_COLORS[Math.floor(Math.random()*8)]});
-        toast('Application submitted'); UI.dashTab='profile'; go('sitter-dashboard');
+        toast('Application submitted'); logAct('sitter.apply', sid, data.name); UI.dashTab='profile'; go('sitter-dashboard');
       }
     } catch(err){}
     btn.disabled=false; btn.textContent= editing?'Save profile':'Submit application';
@@ -1938,6 +2050,7 @@ document.addEventListener('input', e=>{
   if (t.dataset.addon){ const id=t.dataset.addon; t.checked? D.addons.push(id) : D.addons.splice(D.addons.indexOf(id),1); refreshSummary(); }
   if (t.dataset.in2){ D[t.dataset.in2] = t.dataset.in2==='food' ? Math.max(0,Number(t.value)||0) : t.value; if (t.dataset.in2==='food') refreshSummary(); }
   if (t.dataset.a2){ D[t.dataset.a2] = t.checked; refreshSummary(); }
+  if (t.dataset.adminq){ UI.adminQ=t.value; clearTimeout(window._aq); window._aq=setTimeout(()=>render(true),200); }
   if (t.dataset.in3==='earn'){ UI.earnDays=+t.value; $('#earnDays').textContent=UI.earnDays+' days/mo'; $('#earnBox').innerHTML=earnBox(UI.earnDays*RATE.day); }
   if (t.dataset.up){ const b=document.getElementById('up-'+t.dataset.up); if (b && t.files.length){ b.textContent='✓ '+(t.files.length>1? t.files.length+' files' : t.files[0].name.slice(0,18)); b.className='badge b-green'; } }
 });
@@ -1961,9 +2074,10 @@ function setMode(m, navigate){
   toast(m==='sitter' ? 'Sitter mode: manage requests, availability and earnings' : 'Cat owner mode: find and book sitters');
 }
 
-const AUTH = { step:1, name:'', email:'', otp:null, via:'', note:'', err:'', cool:0, timer:null, then:null, title:'' };
+const AUTH = { tab:'signup', step:1, name:'', email:'', otp:null, via:'', note:'', err:'', cool:0, timer:null, then:null, title:'' };
 const OTP_TTL = 10*60*1000, OTP_TRIES = 5, RESEND_S = 60;
-const isGmail = e => /^[a-z0-9](?:[a-z0-9._%+-]{0,62})@(gmail\.com|googlemail\.com)$/i.test(e);
+const isEmail = e => /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(e) && e.length<=120;
+const lastEmail = () => { try { return localStorage.getItem('thtcat-email')||''; } catch(e){ return ''; } };
 function newCode(){ const a = new Uint32Array(1); (window.crypto||{}).getRandomValues ? crypto.getRandomValues(a) : (a[0]=Math.floor(Math.random()*4294967295)); return String(a[0] % 1000000).padStart(6,'0'); }
 let MCP = undefined;
 async function getMcp(){
@@ -1972,31 +2086,35 @@ async function getMcp(){
   MCP = await withTimeout(window.claude.use('mcp').catch(()=>null), 10000);
   return MCP;
 }
-function openAuth(then, title){
+function openAuth(then, title, tab){
   clearInterval(AUTH.timer);
-  Object.assign(AUTH, { step:1, otp:null, via:'', note:'', err:'', cool:0, then:then||null, title:title||'Sign up with Gmail' });
-  if (ACC && ACC.email && !AUTH.email){ AUTH.email = ACC.email; AUTH.name = ACC.name||''; }
+  const known = (ACC && ACC.email) || lastEmail();
+  Object.assign(AUTH, { tab: tab || (known ? 'login' : 'signup'), step:1, otp:null, via:'', note:'', err:'', nameErr:'', cool:0, then:then||null, title:title||'' });
+  if (!AUTH.email && known){ AUTH.email = known; AUTH.name = (ACC && ACC.name) || ''; }
   modal('<div id="authBox"></div>'); paintAuth();
-  setTimeout(()=>$('#authName')?.focus(), 50);
+  setTimeout(()=>($('#authName')||$('#authEmail'))?.focus(), 50);
 }
 function paintAuth(){
   const box = $('#authBox'); if (!box) return;
   if (AUTH.step===1){
+    const su = AUTH.tab==='signup';
     box.innerHTML = `
-      <div class="auth-head"><div class="auth-ic" aria-hidden="true">${I.mail}</div><div><h2 class="h-m">${esc(AUTH.title)}</h2><p class="small sub">We’ll email you a 6-digit code to confirm your Gmail address.</p></div></div>
-      <label class="lbl" for="authName">Full name</label>
-      <input class="inp" id="authName" autocomplete="name" maxlength="60" value="${esc(AUTH.name)}" required>
-      <label class="lbl" for="authEmail" style="margin-top:12px">Gmail address</label>
-      <input class="inp" id="authEmail" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="80" placeholder="name@gmail.com" value="${esc(AUTH.email)}" aria-describedby="authErr authHelp" ${AUTH.err?'aria-invalid="true"':''}>
-      <div class="tiny muted" id="authHelp">Only @gmail.com addresses are accepted.</div>
-      <div class="field-err" id="authErr" role="alert">${esc(AUTH.err)}</div>
-      <button class="btn btn-p btn-block auth-cta" type="button" data-a="authSend" id="authSendBtn">Send code</button>
+      <div class="auth-head"><div class="auth-ic" aria-hidden="true">${I.mail}</div><div><h2 class="h-m">${su?'Create your account':'Welcome back'}</h2><p class="small sub">${esc(AUTH.title || (su ? 'Book sitters, track your cat and earn points.' : 'Log in to see your bookings and messages.'))}</p></div></div>
+      <div class="mode-switch big auth-tabs" role="group" aria-label="Log in or sign up"><button type="button" data-a="authTabLogin" aria-pressed="${!su}">Log in</button><button type="button" data-a="authTabSignup" aria-pressed="${su}">Sign up</button></div>
+      ${su ? `<label class="lbl" for="authName">Full name</label>
+      <input class="inp" id="authName" autocomplete="name" maxlength="60" value="${esc(AUTH.name)}" aria-describedby="nameErr" ${AUTH.nameErr?'aria-invalid="true"':''}>
+      <div class="field-err" id="nameErr" role="alert">${esc(AUTH.nameErr||'')}</div>` : ''}
+      <label class="lbl" for="authEmail">Email address</label>
+      <input class="inp" id="authEmail" type="email" inputmode="email" autocomplete="${su?'email':'username'}" spellcheck="false" autocapitalize="off" maxlength="120" placeholder="you@example.com" value="${esc(AUTH.email)}" aria-describedby="authHelp authErr" ${AUTH.err?'aria-invalid="true"':''}>
+      <div class="tiny muted" id="authHelp">We’ll email you a 6-digit code. No password needed.</div>
+      <div class="field-err" id="authErr" role="alert">${esc(AUTH.err)}${AUTH.noAccount?` <button type="button" class="link-btn" data-a="authTabSignup">Create an account</button>`:''}</div>
+      <button class="btn btn-p btn-block auth-cta" type="button" data-a="authSend" id="authSendBtn">${su?'Create account':'Send login code'}</button>
       ${Store.mode==='supa' && CFG.google ? `<div class="or-line"><span>or</span></div><button class="btn btn-g btn-block auth-cta g-btn" type="button" data-a="google"><svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#4285F4" d="M45 24.5c0-1.6-.1-3.1-.4-4.5H24v8.5h11.8c-.5 2.7-2 5-4.4 6.6v5.5h7.1c4.2-3.8 6.5-9.5 6.5-16.1z"/><path fill="#34A853" d="M24 46c5.9 0 10.9-2 14.5-5.4l-7.1-5.5c-2 1.3-4.5 2.1-7.4 2.1-5.7 0-10.5-3.8-12.2-9H4.5v5.7C8.1 41 15.5 46 24 46z"/><path fill="#FBBC05" d="M11.8 28.2c-.4-1.3-.7-2.7-.7-4.2s.3-2.9.7-4.2v-5.7H4.5C3 17.1 2 20.4 2 24s1 6.9 2.5 9.9l7.3-5.7z"/><path fill="#EA4335" d="M24 10.8c3.2 0 6.1 1.1 8.4 3.3l6.3-6.3C34.9 4.2 29.9 2 24 2 15.5 2 8.1 7 4.5 14.1l7.3 5.7c1.7-5.2 6.5-9 12.2-9z"/></svg>Continue with Google</button>` : ''}
       <button class="btn btn-g btn-block" type="button" data-a="closeModal" style="margin-top:8px">Not now</button>`;
   } else {
     const left = AUTH.cool;
     box.innerHTML = `
-      <div class="auth-head"><div class="auth-ic" aria-hidden="true">${I.key}</div><div><h2 class="h-m">Enter your code</h2><p class="small sub">${AUTH.via==='gmail' ? `We sent a 6-digit code to <b>${esc(AUTH.email)}</b>. Check your inbox (and Spam).` : `Code for <b>${esc(AUTH.email)}</b>`}</p></div></div>
+      <div class="auth-head"><div class="auth-ic" aria-hidden="true">${I.key}</div><div><h2 class="h-m">Check your email</h2><p class="small sub">${AUTH.via==='gmail' ? `We sent a 6-digit code to <b>${esc(AUTH.email)}</b>. Check your inbox (and Spam).` : `Code for <b>${esc(AUTH.email)}</b>`}</p></div></div>
       ${AUTH.via==='screen' ? `<div class="otp-demo" role="status"><div class="tiny">${esc(AUTH.note)}</div><div class="otp-demo-code" aria-label="Your code">${esc(AUTH.otp?.shown||'')}</div></div>` : ''}
       ${AUTH.via==='gmail' && AUTH.note ? `<div class="tiny muted" style="margin-bottom:8px">${esc(AUTH.note)}</div>` : ''}
       <label class="lbl" for="authCode">6-digit code</label>
@@ -2013,16 +2131,20 @@ function paintAuth(){
 async function authSend(isResend){
   const btn = isResend ? $('#authResend') : $('#authSendBtn');
   if (!isResend){
-    AUTH.name = ($('#authName')?.value||'').trim().replace(/\s+/g,' ');
+    if ($('#authName')) AUTH.name = ($('#authName').value||'').trim().replace(/\s+/g,' ');
     AUTH.email = ($('#authEmail')?.value||'').trim().toLowerCase();
-    if (AUTH.name.length<2){ AUTH.err='Please enter your full name.'; paintAuth(); $('#authName')?.focus(); return; }
-    if (!isGmail(AUTH.email)){ AUTH.err='Enter a valid Gmail address, for example name@gmail.com.'; paintAuth(); $('#authEmail')?.focus(); return; }
+    AUTH.err=''; AUTH.nameErr=''; AUTH.noAccount=false;
+    if (AUTH.tab==='signup' && AUTH.name.length<2){ AUTH.nameErr='Please enter your full name.'; paintAuth(); $('#authName')?.focus(); return; }
+    if (!isEmail(AUTH.email)){ AUTH.err='Enter a valid email address, for example name@example.com.'; paintAuth(); $('#authEmail')?.focus(); return; }
+    if (AUTH.tab==='login' && Store.mode!=='supa' && !(ACC && ACC.email===AUTH.email)){ AUTH.err='No account uses this email yet.'; AUTH.noAccount=true; paintAuth(); $('#authEmail')?.focus(); return; }
+    if (AUTH.tab==='login' && ACC && ACC.email===AUTH.email && !AUTH.name) AUTH.name = ACC.name||'';
+    try { localStorage.setItem('thtcat-email', AUTH.email); } catch(e){}
   } else if (AUTH.cool>0) return;
   AUTH.err=''; if (btn){ btn.disabled=true; btn.textContent='Sending…'; }
   const code = newCode();
   AUTH.otp = { hash: hashStr(code+'|'+AUTH.email), exp: Date.now()+OTP_TTL, tries:0 };
   const r = await deliverCode(AUTH.email, AUTH.name, code);
-  if (r.error){ AUTH.err = r.error; if (btn){ btn.disabled=false; btn.textContent = isResend?'Resend code':'Send code'; } if (!isResend){ AUTH.step=1; } paintAuth(); return; }
+  if (r.error){ AUTH.err = r.error; AUTH.noAccount = !!r.noAccount; if (btn){ btn.disabled=false; btn.textContent = isResend?'Resend code':'Send code'; } if (!isResend){ AUTH.step=1; } paintAuth(); return; }
   AUTH.via = r.via; AUTH.note = r.note||''; if (r.via==='screen') AUTH.otp.shown = code;
   AUTH.step = 2; AUTH.cool = RESEND_S; paintAuth();
   clearInterval(AUTH.timer);
@@ -2031,8 +2153,12 @@ async function authSend(isResend){
 }
 async function deliverCode(email, name, code){
   if (Store.mode==='supa'){
-    const { error } = await SUPA.client.auth.signInWithOtp({ email, options:{ shouldCreateUser:true, data:{ full_name:name } } });
-    if (error) return { via:'server', note:'', error: /rate|seconds/i.test(error.message) ? 'Too many codes requested. Wait a minute, then press Resend.' : ('Could not send the code: '+error.message) };
+    const login = AUTH.tab==='login';
+    const { error } = await SUPA.client.auth.signInWithOtp({ email, options: login ? { shouldCreateUser:false } : { shouldCreateUser:true, data:{ full_name:name } } });
+    if (error){
+      if (login && /signups? not allowed|not found|user not/i.test(error.message)) return { via:'server', error:'No account uses this email yet.', noAccount:true };
+      return { via:'server', note:'', error: /rate|seconds|security purposes/i.test(error.message) ? 'Too many codes requested. Wait a minute, then press Resend.' : ('Could not send the code: '+error.message) };
+    }
     return { via:'gmail', note:'Sent by THTCat. It can take up to a minute.' };
   }
   const mcp = await getMcp();
@@ -2040,7 +2166,7 @@ async function deliverCode(email, name, code){
   if (!mcp) return screen('Demo mode: email sending works only for members of this THTCat workspace. Use this code to continue.');
   const html = `<div style="font-family:Arial,sans-serif;max-width:420px;margin:auto;padding:24px;border:1px solid #e8e1d7;border-radius:14px">
     <h2 style="color:#0e6b66;margin:0 0 8px">THTCat verification code</h2>
-    <p>Hi ${esc(name)}, use this code to confirm your Gmail address:</p>
+    <p>Hi ${esc(name)}, use this code to confirm your email address:</p>
     <p style="font-size:32px;letter-spacing:8px;font-weight:700;color:#1c2a2e;margin:16px 0">${code}</p>
     <p style="color:#4d5d62;font-size:13px">The code expires in 10 minutes. If you did not request it, you can ignore this email.</p></div>`;
   try {
@@ -2066,10 +2192,10 @@ async function authVerify(){
   if (v.length!==6){ AUTH.err='Enter all 6 digits.'; paintAuth(); return; }
   if (hashStr(v+'|'+AUTH.email)!==o.hash){ o.tries++; AUTH.err=`That code is not right. ${OTP_TRIES-o.tries} tries left.`; paintAuth(); return; }
   const btn=$('#authVerifyBtn'); if (btn){ btn.disabled=true; btn.textContent='Verifying…'; }
-  const prof = { email:AUTH.email, name:AUTH.name, verified:true, verifiedAt:Date.now(), via:AUTH.via, mode:UI.mode };
+  const prof = { email:AUTH.email, name:AUTH.name || (ACC&&ACC.name) || AUTH.email.split('@')[0], verified:true, verifiedAt:Date.now(), via:AUTH.via, mode:UI.mode };
   try { await Store.set(profilePath(), prof); } catch(e){ if (btn){ btn.disabled=false; btn.textContent='Verify and continue'; } AUTH.err='Could not save your account. Try again.'; paintAuth(); return; }
-  ACC = prof; clearInterval(AUTH.timer); AUTH.otp=null;
-  closeModal(); updateChrome(); toast('Welcome, '+AUTH.name.split(' ')[0]+'! Your Gmail is verified');
+  ACC = prof; clearInterval(AUTH.timer); AUTH.otp=null; logAct(AUTH.tab==='login'?'auth.login':'auth.signup', AUTH.email, ''); touchMember();
+  closeModal(); updateChrome(); toast(AUTH.tab==='login' ? 'Welcome back, '+prof.name.split(' ')[0] : 'Welcome, '+prof.name.split(' ')[0]+'! Your account is ready');
   const then = AUTH.then; AUTH.then=null; if (then) setTimeout(then, 60); else render(true);
 }
 async function supaVerify(v){
@@ -2078,17 +2204,38 @@ async function supaVerify(v){
   const { data, error } = await SUPA.client.auth.verifyOtp({ email:AUTH.email, token:v, type:'email' });
   if (error || !data?.user){ AUTH.err = 'That code is wrong or has expired. Use the code in the latest email, or press Resend code.'; paintAuth(); return; }
   const uid = data.user.id;
-  await SUPA.client.from('docs').upsert([{path:'data/users/'+uid+'/profile', parent:'data/users/'+uid, data:{email:AUTH.email, name:AUTH.name, verified:true, verifiedAt:Date.now(), via:'supabase', mode:UI.mode}}, {path:'profiles/'+uid, parent:'profiles', data:{name:AUTH.name}}]);
+  if (AUTH.tab==='signup') await SUPA.client.from('docs').upsert([{path:'data/users/'+uid+'/profile', parent:'data/users/'+uid, data:{email:AUTH.email, name:AUTH.name, verified:true, verifiedAt:Date.now(), via:'supabase', mode:UI.mode}}, {path:'profiles/'+uid, parent:'profiles', data:{name:AUTH.name}}]);
+  try { sessionStorage.setItem('thtcat-justauth', AUTH.tab); } catch(e){}
   if (AUTH.then){ try { sessionStorage.setItem('thtcat-resume', JSON.stringify({ D, hash: D ? 'checkout' : null })); } catch(e){} }
   location.reload();
 }
 function googleSignIn(){ SUPA.client.auth.signInWithOAuth({ provider:'google', options:{ redirectTo: location.origin + location.pathname } }); }
 function accountModal(){
-  modal(`<div class="auth-head"><div class="auth-ic" aria-hidden="true">${esc((ACC.name||'?')[0].toUpperCase())}</div><div><h2 class="h-m">${esc(ACC.name||'')}</h2><p class="small sub">${esc(ACC.email)} <span class="badge b-green">Verified</span></p></div></div>
-    <div class="small sub" style="margin:6px 0 14px">Verified ${ACC.verifiedAt? new Date(ACC.verifiedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : ''} · ${ACC.via==='gmail'?'code sent by Gmail':'demo code'}</div>
+  const em = (ACC&&ACC.email) || SUPA.user?.email || '';
+  const nm = (ACC&&ACC.name) || SUPA.user?.user_metadata?.full_name || em.split('@')[0];
+  const ms = mySitter();
+  modal(`<div class="auth-head"><div class="auth-ic" aria-hidden="true">${esc((nm||'?')[0].toUpperCase())}</div><div><h2 class="h-m">My account</h2><p class="small sub">${esc(em)} <span class="badge b-green">Verified</span></p></div></div>
+    <label class="lbl" for="accName">Display name</label>
+    <div class="row" style="gap:8px"><input class="inp" id="accName" autocomplete="name" maxlength="60" value="${esc(nm)}" aria-describedby="accErr"><button class="btn btn-g" type="button" data-a="saveName" style="min-height:44px">Save</button></div>
+    <div class="field-err" id="accErr" role="alert"></div>
     <div class="lbl">Use THTCat as</div>
     <div class="mode-switch big" role="group" aria-label="Choose how you use THTCat"><button type="button" data-a="setModeCustomer" aria-pressed="${UI.mode==='customer'}">Cat owner</button><button type="button" data-a="setModeSitter" aria-pressed="${UI.mode==='sitter'}">Sitter</button></div>
-    <div class="row between" style="margin-top:16px"><button class="btn btn-g" type="button" data-a="signOut">Sign out</button><button class="btn btn-p" type="button" data-a="closeModal">Done</button></div>`);
+    <div class="acc-links">
+      <a href="#bookings" data-a="closeModal">My bookings</a>
+      <a href="#rewards" data-a="closeModal">Rewards and points</a>
+      <a href="#${ms?'sitter-dashboard:requests':'become-sitter'}" data-a="closeModal">${ms?'Sitter dashboard':'Become a sitter'}</a>
+      ${Store.isAdmin?'<a href="#admin" data-a="closeModal">Admin</a>':''}
+    </div>
+    <div class="row between" style="margin-top:16px"><button class="btn btn-g" type="button" data-a="signOut">Log out</button><button class="btn btn-p" type="button" data-a="closeModal">Done</button></div>`);
+}
+async function saveName(){
+  const v = ($('#accName')?.value||'').trim().replace(/\s+/g,' ');
+  if (v.length<2){ $('#accErr').textContent='Please enter at least 2 characters.'; $('#accName').setAttribute('aria-invalid','true'); return; }
+  try {
+    if (ACC) await Store.update(profilePath(), {name:v}); else await Store.set(profilePath(), {email:SUPA.user?.email||'', name:v, verified:true, verifiedAt:Date.now(), mode:UI.mode});
+    if (Store.mode==='supa') await Store.set('profiles/'+Store.me, {name:v});
+    if (ACC) ACC.name=v; NAMES[Store.me]=v; updateChrome(); toast('Name saved'); closeModal();
+  } catch(e){ $('#accErr').textContent='Could not save. Try again.'; }
 }
 document.addEventListener('keydown', e=>{
   if (e.key==='Enter' && e.target.closest && e.target.closest('#authBox')){ e.preventDefault(); AUTH.step===1 ? authSend() : authVerify(); }
