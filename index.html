@@ -735,6 +735,8 @@ async function boot(){
     const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey);
     SUPA.client = sb; Store.mode='supa';
     const { data:{ session } } = await sb.auth.getSession();
+    // Email confirm / magic links come back as #access_token=... or #error=...; clear them so the router shows a normal page.
+    { const h=location.hash||''; if (/access_token=|error_description=|[#&]error=/.test(h)){ const err=/error_description=([^&]+)/.exec(h); history.replaceState(null,'',location.pathname+location.search+'#sitters'); if (err) setTimeout(()=>toast('Link problem: '+decodeURIComponent(err[1].replace(/\+/g,' '))+'. Please log in with a code.'),800); else if (session) setTimeout(()=>toast('Email confirmed. You are logged in.'),800); } }
     SUPA.user = session?.user || null; Store.me = SUPA.user?.id || null;
     if (Store.me){
       try { const {data} = await sb.from('admins').select('uid').eq('uid', Store.me).maybeSingle(); Store.isAdmin = !!data; } catch(e){}
@@ -2154,7 +2156,7 @@ async function authSend(isResend){
 async function deliverCode(email, name, code){
   if (Store.mode==='supa'){
     const login = AUTH.tab==='login';
-    const { error } = await SUPA.client.auth.signInWithOtp({ email, options: login ? { shouldCreateUser:false } : { shouldCreateUser:true, data:{ full_name:name } } });
+    const { error } = await SUPA.client.auth.signInWithOtp({ email, options: login ? { shouldCreateUser:false, emailRedirectTo:location.origin+location.pathname } : { shouldCreateUser:true, emailRedirectTo:location.origin+location.pathname, data:{ full_name:name } } });
     if (error){
       if (login && /signups? not allowed|not found|user not/i.test(error.message)) return { via:'server', error:'No account uses this email yet.', noAccount:true };
       return { via:'server', note:'', error: /rate|seconds|security purposes/i.test(error.message) ? 'Too many codes requested. Wait a minute, then press Resend.' : ('Could not send the code: '+error.message) };
