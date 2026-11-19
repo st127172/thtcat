@@ -733,7 +733,7 @@ async function boot(){
   subscribeAll();
   updateChrome();
 }
-function onDbError(e){ if (e && (e.code==='revoked' || e.code==='unavailable')) { $('#demoBar').innerHTML = 'Connection to live data was lost. Reload the page to reconnect.'; } }
+function onDbError(e){ if (Store.mode==='supa' && e && (e.code==='PGRST205' || e.code==='42P01' || /schema cache|does not exist|Could not find the table/i.test(e.message||''))){ ready.s=ready.b=true; if (loadTimer){ clearTimeout(loadTimer); loadTimer=null; } $('#app').innerHTML = `<div class="wrap empty"><h2 class="h-m">The database is not set up yet</h2><p class="sub">Open Supabase › SQL Editor, paste <b>supabase/schema.sql</b> and press Run, then reload this page.</p></div>`; window._dbMissing=true; return; } if (e && (e.code==='revoked' || e.code==='unavailable')) { $('#demoBar').innerHTML = 'Connection to live data was lost. Reload the page to reconnect.'; } }
 let prevStatus = null;
 function subscribeAll(){
   loadTimer = setTimeout(()=>{ loadSlow=true; schedule(); }, 10000);
@@ -827,6 +827,7 @@ function restoreUI(st){
   if (st.focus){ const el=document.querySelector(`[data-keep="${st.focus}"]`); if (el){ el.value=st.val; el.focus(); try{ el.setSelectionRange(st.s, st.e); }catch(e){} } }
 }
 function render(soft){
+  if (window._dbMissing) return;
   if (!(ready.s && ready.b)){
     $('#app').innerHTML = `<div class="loading"><div style="text-align:center">${loadSlow?'<b>Live data can\'t be reached yet.</b><div class="small">Check your connection — the page keeps trying.</div>':'<div class="spin-d"></div>Loading THTCat…'}</div></div>`;
     return;
