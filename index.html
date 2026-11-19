@@ -619,7 +619,8 @@ function supaWatch(filterCol, val, load){
   return ()=>{ alive=false; clearTimeout(t); SUPA.client.removeChannel(ch); };
 }
 Store.watch = (c, cb, onErr) => {
-  if (Store.mode==='supa') return supaWatch('parent', c, async ()=>{ const {data,error}=await SUPA.client.from('docs').select('path,data').eq('parent', c); if (error){ onErr&&onErr(error); return; } cb(data.map(r=>({id:r.path.split('/').pop(), ...r.data}))); });
+  if (Store.mode==='supa'){ let tries=0; const load = async ()=>{ const {data,error}=await SUPA.client.from('docs').select('path,data').eq('parent', c); if (error){ onErr&&onErr(error); if (!window._dbMissing && tries++<20) setTimeout(load, 3000); return; } cb(data.map(r=>({id:r.path.split('/').pop(), ...r.data}))); }; return supaWatch('parent', c, load); }
+  if (false) return supaWatch('parent', c, async ()=>{ const {data,error}=await SUPA.client.from('docs').select('path,data').eq('parent', c); if (error){ onErr&&onErr(error); return; } cb(data.map(r=>({id:r.path.split('/').pop(), ...r.data}))); });
   if (Store.mode==='cloud') return Store.db.collection(c).onSnapshot(s=>cb(s.docs.map(d=>({id:d.id, ...d.data()}))), e=>{ onErr&&onErr(e); });
   const s={t:'c',p:c,cb}; LOCAL.subs.push(s); setTimeout(()=>cb(localColl(c)),0); return ()=>{ LOCAL.subs=LOCAL.subs.filter(x=>x!==s); };
 };
@@ -812,7 +813,7 @@ function setPageSubs(key, make){
   if (make) pageSubs = make();
 }
 let cctvTimer = null, rafPending = false;
-function schedule(){ if (rafPending) return; rafPending=true; requestAnimationFrame(()=>{ rafPending=false; render(true); }); }
+function schedule(){ if (rafPending) return; rafPending=true; let done=false; const f=()=>{ if (done) return; done=true; rafPending=false; render(true); }; requestAnimationFrame(f); setTimeout(f, 120); }
 function captureUI(){
   const st = {scroll:{}};
   const a = document.activeElement;
