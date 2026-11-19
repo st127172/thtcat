@@ -92,6 +92,14 @@ drop trigger if exists apply_review on public.docs;
 create trigger apply_review after insert on public.docs for each row
   when (new.path ~ '^sitters/[^/]+/reviews/[^/]+$') execute function public.apply_review();
 
+-- 7a. Let the website's roles use the table (rows are still filtered by the policies above).
+grant usage on schema public to anon, authenticated;
+grant select on public.docs to anon;
+grant select, insert, update, delete on public.docs to authenticated;
+grant select on public.admins to authenticated;
+grant execute on function public.doc_merge(text, jsonb) to authenticated;
+grant execute on function public.is_admin(), public.can_read(text), public.can_write(text) to anon, authenticated;
+
 -- 7. Live updates for the app.
 do $$ begin
   alter publication supabase_realtime add table public.docs;
