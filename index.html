@@ -663,6 +663,7 @@ Store.setQuiet = (p, d) => { try {
   if (Store.mode==='supa') return SUPA.client.from('docs').upsert({path:p, parent:parentOf(p), data:JSON.parse(JSON.stringify(d))}).then(()=>{}, ()=>{});
   if (Store.mode==='cloud') return Store.db.doc(p).set(d).catch(()=>{});
   LOCAL.data[p]=JSON.parse(JSON.stringify(d)); lsSave(); localEmit(p); return Promise.resolve(); } catch(e){ return Promise.resolve(); } };
+function catAge(a){ a=Number(a)||0; const y=Math.floor(a), m=Math.round((a-y)*12); if (!y) return m+' mo'; return y+' yr'+(m?' '+m+' mo':''); }
 function logAct(act, target, detail){
   if (!Store.me) return;
   const nm = (ACC&&ACC.name) || NAMES[Store.me] || '';
@@ -1312,7 +1313,7 @@ function viewCheckout(){
     ${CATS.length ? `<div class="grid" style="gap:10px">${CATS.map(c=>{ const iss=catIssues(c), sel=D.cats.includes(c.id);
       return `<div class="cat-opt ${sel?'sel':''} ${iss.length?'bad':''}" data-cat="${c.id}">
         <div class="cat-av">${catSVG(c.color,c.bg)}</div>
-        <div style="flex:1"><b>${esc(c.name)}</b> <span class="muted small">· ${esc(c.breed)} · ${esc(c.age)} yr · ${esc(c.sex)}</span>
+        <div style="flex:1"><b>${esc(c.name)}</b> <span class="muted small">· ${esc(c.breed)} · ${catAge(c.age)} · ${esc(c.sex)}</span>
           <div class="row wrapf tiny" style="gap:6px;margin-top:5px">
           ${iss.length? iss.map(x=>`<span class="badge b-rose">⚠ ${x}</span>`).join('') : `<span class="badge b-green">${I.check} Chip •••${esc(c.chip.slice(-4))}</span><span class="badge b-green">${I.check} Vaccinated ${esc(fmtD(c.vacc))}</span>`}
           ${c.notes?`<span class="badge b-amber">Medical note</span>`:''}</div></div>
@@ -1450,7 +1451,7 @@ function bookingRow(b, sitterView){
 }
 function catsView(){
   return `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px">
-   ${CATS.map(c=>{const iss=catIssues(c); return `<div class="card pad"><div class="row" style="gap:12px"><div class="cat-av">${catSVG(c.color,c.bg)}</div><div style="flex:1"><b>${esc(c.name)}</b><div class="small muted">${esc(c.breed)} · ${esc(c.age)} yr · ${esc(c.sex)}</div></div><button class="btn btn-g btn-sm" data-editcat="${c.id}">Edit</button></div>
+   ${CATS.map(c=>{const iss=catIssues(c); return `<div class="card pad"><div class="row" style="gap:12px"><div class="cat-av">${catSVG(c.color,c.bg)}</div><div style="flex:1"><b>${esc(c.name)}</b><div class="small muted">${esc(c.breed)} · ${catAge(c.age)} · ${esc(c.sex)}</div></div><button class="btn btn-g btn-sm" data-editcat="${c.id}">Edit</button></div>
    <hr class="sep"><div class="small"><span class="muted">Microchip:</span> ${c.chip?esc(c.chip):'<span style="color:var(--rose)">Not registered</span>'}</div>
    <div class="small"><span class="muted">Last vaccination:</span> ${c.vacc?esc(fmtD(c.vacc))+' '+c.vacc.slice(0,4):'—'} ${catIssues(c).includes('Vaccination expired')?'<span class="badge b-rose">Expired</span>':'<span class="badge b-green">Valid</span>'}</div>
    ${c.notes?`<div class="small"><span class="muted">Medical / diet:</span> ${esc(c.notes)}</div>`:''}
@@ -1462,7 +1463,7 @@ function catEditor(id){
   modal(`<h2 class="h-m">${id?'Update '+esc(c.name):'Add a cat'}</h2><p class="small muted" style="margin:4px 0 14px">A 15-digit microchip and a vaccination within 12 months are required to book.</p>
   <form data-form="cat" data-id="${id||''}" class="grid" style="gap:10px">
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px"><div><label class="f">Name</label><input class="inp" name="name" required maxlength="40" value="${esc(c.name)}"></div><div><label class="f">Breed</label><input class="inp" name="breed" maxlength="40" value="${esc(c.breed)}"></div></div>
-    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px"><div><label class="f">Age (years)</label><input class="inp" name="age" type="number" min="0" max="30" value="${esc(c.age)}"></div><div><label class="f">Sex</label><select class="inp" name="sex"><option ${c.sex==='Male'?'selected':''}>Male</option><option ${c.sex==='Female'?'selected':''}>Female</option></select></div></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px"><div><span class="f" id="ageLbl">Age</span><div class="row" style="gap:8px" role="group" aria-labelledby="ageLbl"><label class="sr-only" for="ageY">Years</label><input class="inp" id="ageY" name="ageY" type="number" inputmode="numeric" min="0" max="30" step="1" value="${c.age!=null&&c.age!==''?Math.floor(Number(c.age)):''}" placeholder="0" style="flex:1"><span class="small muted">yr</span><label class="sr-only" for="ageM">Months</label><input class="inp" id="ageM" name="ageM" type="number" inputmode="numeric" min="0" max="11" step="1" value="${c.age!=null&&c.age!==''?Math.round((Number(c.age)%1)*12):''}" placeholder="0" style="flex:1"><span class="small muted">mo</span></div></div><div><label class="f">Sex</label><select class="inp" name="sex"><option ${c.sex==='Male'?'selected':''}>Male</option><option ${c.sex==='Female'?'selected':''}>Female</option></select></div></div>
     <div><label class="f">Microchip number</label><input class="inp" name="chip" inputmode="numeric" maxlength="15" placeholder="15 digits" value="${esc(c.chip)}"></div>
     <div><label class="f">Last vaccination date</label><input class="inp" name="vacc" type="date" max="${TODAY}" required value="${esc(c.vacc)}"></div>
     <div><label class="f">Illness, diet or medication (required if any)</label><textarea class="inp" name="notes" rows="2" maxlength="300">${esc(c.notes)}</textarea></div>
@@ -1501,7 +1502,7 @@ function viewBooking(id){
         <div class="sumline"><span class="sub">Sitter receives</span><span>${baht(q.sitterPay)} <span class="tiny muted">(after 20% GP)</span></span></div>
       </div>
       <div><h3 class="h-m" style="font-size:16px;margin-bottom:12px">Cats</h3>
-        ${(b.catsSnap||[]).map(c=>`<div class="row" style="gap:10px;margin-bottom:8px"><div class="cat-av" style="width:40px;height:40px">${catSVG(c.color||'#888',c.bg||'#eee')}</div><div class="small"><b>${esc(c.name)}</b> · ${esc(c.breed)} · ${esc(c.age)} yr<div class="tiny muted">Chip ${esc(c.chip)} · vaccinated ${esc(c.vacc)}</div>${c.notes?`<div class="tiny" style="color:var(--amber)">⚠ ${esc(c.notes)}</div>`:''}</div></div>`).join('')}
+        ${(b.catsSnap||[]).map(c=>`<div class="row" style="gap:10px;margin-bottom:8px"><div class="cat-av" style="width:40px;height:40px">${catSVG(c.color||'#888',c.bg||'#eee')}</div><div class="small"><b>${esc(c.name)}</b> · ${esc(c.breed)} · ${catAge(c.age)}<div class="tiny muted">Chip ${esc(c.chip)} · vaccinated ${esc(c.vacc)}</div>${c.notes?`<div class="tiny" style="color:var(--amber)">⚠ ${esc(c.notes)}</div>`:''}</div></div>`).join('')}
         <div class="small"><span class="muted">Services:</span> ${(b.addons||[]).length? b.addons.map(a=>ADDONS.find(x=>x.id===a)?.name).join(', ') : 'Standard care'}</div>
         ${b.food?`<div class="small"><span class="muted">Food budget:</span> ${baht(b.food)}</div>`:''}
         ${b.notes?`<div class="small"><span class="muted">Notes:</span> ${esc(b.notes)}</div>`:''}
@@ -1988,7 +1989,8 @@ document.addEventListener('submit', async e=>{
     if (fd.chip && !/^\d{15}$/.test(fd.chip)){ err.textContent='Microchip number must be exactly 15 digits.'; return; }
     if (!fd.vacc){ err.textContent='Add the last vaccination date.'; return; }
     const id = f.dataset.id; let list = CATS.map(c=>({...c}));
-    const data = {name:fd.name.trim(), breed:(fd.breed||'Mixed').trim(), age:Math.max(0,Math.min(30,Number(fd.age)||0)), sex:fd.sex, chip:fd.chip||'', vacc:fd.vacc, notes:(fd.notes||'').trim()};
+    if (!(Number(fd.ageY)>0 || Number(fd.ageM)>0)){ toast('Enter the cat\'s age in years and/or months'); return; }
+    const data = {name:fd.name.trim(), breed:(fd.breed||'Mixed').trim(), age:Math.round(Math.max(0,Math.min(30,(Number(fd.ageY)||0)+Math.min(11,Number(fd.ageM)||0)/12))*100)/100, sex:fd.sex, chip:fd.chip||'', vacc:fd.vacc, notes:(fd.notes||'').trim()};
     if (id) list = list.map(c=>c.id===id?{...c, ...data}:c);
     else { const cc=CAT_COLORS[list.length%CAT_COLORS.length]; const nid='c'+Date.now().toString(36); list.push({id:nid, ...data, color:cc[0], bg:cc[1]}); if (D && location.hash==='#checkout' && !catIssues(data).length) D.cats.push(nid); }
     closeModal();
@@ -2094,7 +2096,7 @@ function openAuth(then, title, tab){
   Object.assign(AUTH, { tab: tab || (known ? 'login' : 'signup'), step:1, otp:null, via:'', note:'', err:'', nameErr:'', cool:0, then:then||null, title:title||'' });
   if (!AUTH.email && known){ AUTH.email = known; AUTH.name = (ACC && ACC.name) || ''; }
   modal('<div id="authBox"></div>'); paintAuth();
-  setTimeout(()=>($('#authName')||$('#authEmail'))?.focus(), 50);
+  setTimeout(()=>{ const ae=document.activeElement; if (ae && ae.tagName==='INPUT' && ae.closest('#authBox')) return; ($('#authName')||$('#authEmail'))?.focus(); }, 50);
 }
 function paintAuth(){
   const box = $('#authBox'); if (!box) return;
